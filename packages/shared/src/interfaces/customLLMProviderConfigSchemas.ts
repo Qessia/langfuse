@@ -27,6 +27,19 @@ export const VertexAIConfigSchema = z
 
 export type VertexAIConfig = z.infer<typeof VertexAIConfigSchema>;
 
+export const GIGACHAT_DEFAULT_SCOPE = "GIGACHAT_API_PERS";
+export const GIGACHAT_DEFAULT_BASE_URL =
+  "https://gigachat.devices.sberbank.ru/api/v1/";
+export const GIGACHAT_DEFAULT_OAUTH_URL =
+  "https://ngw.devices.sberbank.ru:9443/api/v2/oauth";
+
+export const GigaChatConfigSchema = z
+  .object({
+    scope: z.string().default(GIGACHAT_DEFAULT_SCOPE),
+  })
+  .strict();
+export type GigaChatConfig = z.infer<typeof GigaChatConfigSchema>;
+
 export const GCPServiceAccountKeySchema = z.object({
   type: z.literal("service_account"),
   project_id: z.string(),

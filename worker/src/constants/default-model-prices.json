@@ -3987,5 +3987,93 @@
         }
       }
     ]
+  },
+  {
+    "id": "fd621db1-de6f-4d90-95fe-7cf6db118405",
+    "modelName": "gigachat-2",
+    "matchPattern": "(?i)^(sber\\/)?(gigachat|gigachat-2)$",
+    "createdAt": "2026-04-02T00:00:00.000Z",
+    "updatedAt": "2026-04-02T00:00:00.000Z",
+    "tokenizerConfig": null,
+    "tokenizerId": null,
+    "pricingTiers": [
+      {
+        "id": "fd621db1-de6f-4d90-95fe-7cf6db118405_tier_default",
+        "name": "Standard",
+        "isDefault": true,
+        "priority": 0,
+        "conditions": [],
+        "prices": {
+          "input": 0.7222e-6,
+          "output": 0.7222e-6
+        }
+      }
+    ]
+  },
+  {
+    "id": "9e6200e5-4c46-493c-9ed6-afeb790bce9f",
+    "modelName": "gigachat-2-lite",
+    "matchPattern": "(?i)^(sber\\/)?(gigachat-2-lite)$",
+    "createdAt": "2026-04-02T00:00:00.000Z",
+    "updatedAt": "2026-04-02T00:00:00.000Z",
+    "tokenizerConfig": null,
+    "tokenizerId": null,
+    "pricingTiers": [
+      {
+        "id": "9e6200e5-4c46-493c-9ed6-afeb790bce9f_tier_default",
+        "name": "Standard",
+        "isDefault": true,
+        "priority": 0,
+        "conditions": [],
+        "prices": {
+          "input": 0.7222e-6,
+          "output": 0.7222e-6
+        }
+      }
+    ]
+  },
+  {
+    "id": "65bba53b-c718-4c7a-9dad-0e4a7e624b5f",
+    "modelName": "gigachat-2-pro",
+    "matchPattern": "(?i)^(sber\\/)?(gigachat-pro|gigachat-2-pro)$",
+    "createdAt": "2026-04-02T00:00:00.000Z",
+    "updatedAt": "2026-04-02T00:00:00.000Z",
+    "tokenizerConfig": null,
+    "tokenizerId": null,
+    "pricingTiers": [
+      {
+        "id": "65bba53b-c718-4c7a-9dad-0e4a7e624b5f_tier_default",
+        "name": "Standard",
+        "isDefault": true,
+        "priority": 0,
+        "conditions": [],
+        "prices": {
+          "input": 5.5556e-6,
+          "output": 5.5556e-6
+        }
+      }
+    ]
+  },
+  {
+    "id": "fd3f7b3d-6663-4b3b-a90a-ca0068c2eb4d",
+    "modelName": "gigachat-2-max",
+    "matchPattern": "(?i)^(sber\\/)?(gigachat-max|gigachat-2-max)$",
+    "createdAt": "2026-04-02T00:00:00.000Z",
+    "updatedAt": "2026-04-02T00:00:00.000Z",
+    "tokenizerConfig": null,
+    "tokenizerId": null,
+    "pricingTiers": [
+      {
+        "id": "fd3f7b3d-6663-4b3b-a90a-ca0068c2eb4d_tier_default",
+        "name": "Standard",
+        "isDefault": true,
+        "priority": 0,
+        "conditions": [],
+        "prices": {
+          "input": 7.2222e-6,
+          "output": 7.2222e-6
+        }
+      }
+    ]
   }
 ]

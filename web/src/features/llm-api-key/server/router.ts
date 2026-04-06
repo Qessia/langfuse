@@ -17,6 +17,7 @@ import {
   supportedModels,
   GCPServiceAccountKeySchema,
   BedrockConfigSchema,
+  GigaChatConfigSchema,
   VertexAIConfigSchema,
   BEDROCK_USE_DEFAULT_CREDENTIALS,
   VERTEXAI_USE_DEFAULT_CREDENTIALS,
@@ -99,6 +100,9 @@ async function testLLMConnection(
       parsedConfig = vertexAIConfig.location
         ? { location: vertexAIConfig.location }
         : null;
+    } else if (params.adapter === LLMAdapter.GigaChat) {
+      const gigaChatConfig = GigaChatConfigSchema.parse(params.config ?? {});
+      parsedConfig = { scope: gigaChatConfig.scope };
     }
 
     await fetchLLMCompletion({

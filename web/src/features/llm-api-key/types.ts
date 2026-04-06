@@ -1,7 +1,8 @@
 import { z } from "zod";
 import {
-  LLMAdapter,
   BedrockConfigSchema,
+  GigaChatConfigSchema,
+  LLMAdapter,
   VertexAIConfigSchema,
 } from "@langfuse/shared";
 
@@ -15,7 +16,9 @@ export const LlmApiKeySchema = z.object({
   baseURL: z.string().url().optional(),
   withDefaultModels: z.boolean().optional(),
   customModels: z.array(z.string().min(1)).optional(),
-  config: z.union([VertexAIConfigSchema, BedrockConfigSchema]).optional(),
+  config: z
+    .union([VertexAIConfigSchema, BedrockConfigSchema, GigaChatConfigSchema])
+    .optional(),
   extraHeaders: z.record(z.string(), z.string()).optional(),
 });
 

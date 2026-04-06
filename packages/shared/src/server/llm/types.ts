@@ -2,6 +2,7 @@ import { LlmApiKeys } from "@prisma/client";
 import z from "zod";
 import {
   BedrockConfigSchema,
+  GigaChatConfigSchema,
   VertexAIConfigSchema,
 } from "../../interfaces/customLLMProviderConfigSchemas";
 import { JSONObjectSchema } from "../../utils/zod";
@@ -252,6 +253,7 @@ export enum LLMAdapter {
   Bedrock = "bedrock",
   VertexAI = "google-vertex-ai",
   GoogleAIStudio = "google-ai-studio",
+  GigaChat = "gigachat",
 }
 
 export const TextPromptContentSchema = z.string().min(1, "Enter a prompt");
@@ -485,6 +487,14 @@ export const googleAIStudioModels = [
   "gemini-1.5-flash-8b",
 ] as const;
 
+// WARNING: The first entry in the array is chosen as the default model to add LLM API keys
+export const gigaChatModels = [
+  "GigaChat-2",
+  "GigaChat-2-Max",
+  "GigaChat-2-Pro",
+  "GigaChat-2-Lite",
+] as const;
+
 export type AnthropicModel = (typeof anthropicModels)[number];
 export type VertexAIModel = (typeof vertexAIModels)[number];
 export const supportedModels = {
@@ -492,6 +502,7 @@ export const supportedModels = {
   [LLMAdapter.OpenAI]: openAIModels,
   [LLMAdapter.VertexAI]: vertexAIModels,
   [LLMAdapter.GoogleAIStudio]: googleAIStudioModels,
+  [LLMAdapter.GigaChat]: gigaChatModels,
   [LLMAdapter.Azure]: [],
   [LLMAdapter.Bedrock]: [],
 } as const;
@@ -517,7 +528,9 @@ export const LLMApiKeySchema = z
     baseURL: z.string().nullable(),
     customModels: z.array(z.string()),
     withDefaultModels: z.boolean(),
-    config: z.union([BedrockConfigSchema, VertexAIConfigSchema]).nullish(), // Bedrock and VertexAI have additional config
+    config: z
+      .union([BedrockConfigSchema, VertexAIConfigSchema, GigaChatConfigSchema])
+      .nullish(), // Bedrock, VertexAI and GigaChat have additional config
   })
   // strict mode to prevent extra keys. Thorws error otherwise
   // https://github.com/colinhacks/zod?tab=readme-ov-file#strict

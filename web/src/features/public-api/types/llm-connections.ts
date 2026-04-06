@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { paginationZod, LLMAdapter, type JSONValue } from "@langfuse/shared";
-import { BedrockConfigSchema, VertexAIConfigSchema } from "@langfuse/shared";
+import {
+  BedrockConfigSchema,
+  GigaChatConfigSchema,
+  VertexAIConfigSchema,
+} from "@langfuse/shared";
 
 // Base LLM connection response schema - strict to prevent secret leakage
 export const LlmConnectionResponse = z
@@ -83,6 +87,18 @@ export const PutLlmConnectionV1Body = PutLlmConnectionV1BodyBase.superRefine(
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message: `Invalid VertexAI config: ${result.error.issues.map((e) => e.message).join(", ")}. Expected: { location: string }`,
+            path: ["config"],
+          });
+        }
+      }
+    } else if (adapter === LLMAdapter.GigaChat) {
+      // GigaChat config is optional, but if provided must be valid
+      if (config) {
+        const result = GigaChatConfigSchema.safeParse(config);
+        if (!result.success) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Invalid GigaChat config: ${result.error.issues.map((e) => e.message).join(", ")}. Expected: { scope: string }`,
             path: ["config"],
           });
         }

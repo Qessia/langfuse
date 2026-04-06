@@ -515,6 +515,10 @@ describe("/api/public/llm-connections API Endpoints", () => {
           adapter: LLMAdapter.GoogleAIStudio,
           provider: generateUniqueProvider("test-studio"),
         },
+        {
+          adapter: LLMAdapter.GigaChat,
+          provider: generateUniqueProvider("test-gigachat"),
+        },
       ];
 
       for (const { adapter, provider } of adaptersWithoutConfig) {
@@ -588,6 +592,25 @@ describe("/api/public/llm-connections API Endpoints", () => {
       expect(vertexResponse.status).toBe(201);
       expect(vertexResponse.body.adapter).toBe(LLMAdapter.VertexAI);
       expect(vertexResponse.body.config).toBeNull();
+
+      const gigachatResponse = await makeZodVerifiedAPICall(
+        PutLlmConnectionV1Response,
+        "PUT",
+        "/api/public/llm-connections",
+        {
+          provider: generateUniqueProvider("test-gigachat-config"),
+          adapter: LLMAdapter.GigaChat,
+          secretKey: "credentials-value",
+          config: { scope: "GIGACHAT_API_PERS" },
+        },
+        auth,
+        201,
+      );
+      expect(gigachatResponse.status).toBe(201);
+      expect(gigachatResponse.body.adapter).toBe(LLMAdapter.GigaChat);
+      expect(gigachatResponse.body.config).toEqual({
+        scope: "GIGACHAT_API_PERS",
+      });
     });
 
     it("should handle optional fields correctly", async () => {

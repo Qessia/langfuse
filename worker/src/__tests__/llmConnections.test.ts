@@ -37,6 +37,9 @@ import { z } from "zod";
  * - LANGFUSE_LLM_CONNECTION_BEDROCK_REGION
  * - LANGFUSE_LLM_CONNECTION_VERTEXAI_KEY
  * - LANGFUSE_LLM_CONNECTION_GOOGLEAISTUDIO_KEY
+ * - LANGFUSE_LLM_CONNECTION_GIGACHAT_CREDENTIALS
+ * - LANGFUSE_LLM_CONNECTION_GIGACHAT_BASE_URL
+ * - LANGFUSE_LLM_CONNECTION_GIGACHAT_SCOPE
  */
 
 type TestLLMConnection = {
@@ -1114,5 +1117,83 @@ describe("LLM Connection Tests", () => {
       expect(typeof completion).toBe("object");
       expect((completion as CompletionWithReasoning).text).toContain("4");
     }, 30_000);
+  });
+
+  describe("GigaChat", () => {
+    const MODEL = "GigaChat-2-Max";
+
+    const checkEnvVars = () => {
+      if (!process.env.LANGFUSE_LLM_CONNECTION_GIGACHAT_CREDENTIALS) {
+        throw new Error(
+          "LANGFUSE_LLM_CONNECTION_GIGACHAT_CREDENTIALS not set. " +
+            "This test requires GigaChat credentials to verify the LLM connection. " +
+            "Set the environment variable to run this test.",
+        );
+      }
+      if (!process.env.LANGFUSE_LLM_CONNECTION_GIGACHAT_BASE_URL) {
+        throw new Error(
+          "LANGFUSE_LLM_CONNECTION_GIGACHAT_BASE_URL not set. " +
+            "This test requires the GigaChat base URL to verify the LLM connection. " +
+            "Set the environment variable to run this test.",
+        );
+      }
+    };
+
+    const getConfig = () => ({
+      scope:
+        process.env.LANGFUSE_LLM_CONNECTION_GIGACHAT_SCOPE ??
+        "GIGACHAT_API_PERS",
+    });
+
+    test("simple completion", async () => {
+      checkEnvVars();
+
+      const completion = await fetchLLMCompletion({
+        streaming: false,
+        messages: [
+          {
+            role: "user",
+            content: "What is 2+2? Answer only with the number.",
+            type: ChatMessageType.PublicAPICreated,
+          },
+        ],
+        modelParams: {
+          provider: "gigachat",
+          adapter: LLMAdapter.GigaChat,
+          model: MODEL,
+          temperature: 0,
+          max_tokens: 10,
+        },
+        llmConnection: {
+          secretKey: encrypt(
+            process.env.LANGFUSE_LLM_CONNECTION_GIGACHAT_CREDENTIALS!,
+          ),
+          baseURL: process.env.LANGFUSE_LLM_CONNECTION_GIGACHAT_BASE_URL!,
+          config: getConfig(),
+        },
+      });
+
+      expect(typeof completion).toBe("string");
+      expect(completion).toContain("4");
+    }, 30_000);
+
+    registerEvalStructuredOutputTests({
+      checkEnv: checkEnvVars,
+      getModelParams: () => ({
+        provider: "gigachat",
+        adapter: LLMAdapter.GigaChat,
+        model: MODEL,
+        temperature: 0,
+        max_tokens: 200,
+      }),
+      getLLMConnection: () => ({
+        secretKey: encrypt(
+          process.env.LANGFUSE_LLM_CONNECTION_GIGACHAT_CREDENTIALS!,
+        ),
+        baseURL: process.env.LANGFUSE_LLM_CONNECTION_GIGACHAT_BASE_URL!,
+        config: getConfig(),
+      }),
+      timeoutMs: 30_000,
+    });
   });
 });

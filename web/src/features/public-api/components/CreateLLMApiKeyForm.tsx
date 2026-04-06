@@ -4,6 +4,9 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import {
   type BedrockConfig,
   type BedrockCredential,
+  GIGACHAT_DEFAULT_BASE_URL,
+  GIGACHAT_DEFAULT_SCOPE,
+  type GigaChatConfig,
   type VertexAIConfig,
   LLMAdapter,
   type LlmApiKeys,
@@ -63,6 +66,7 @@ const createFormSchema = (mode: "create" | "update") =>
       awsSecretAccessKey: z.string().optional(),
       awsRegion: z.string().optional(),
       vertexAILocation: z.string().optional(),
+      gigachatScope: z.string().optional(),
       extraHeaders: z.array(
         z.object({
           key: z.string().min(1),
@@ -159,11 +163,12 @@ const createFormSchema = (mode: "create" | "update") =>
     )
     .refine(
       (data) => {
-        if (data.adapter !== LLMAdapter.Azure) return true;
+        if (![LLMAdapter.Azure, LLMAdapter.GigaChat].includes(data.adapter))
+          return true;
         return data.baseURL && data.baseURL.trim() !== "";
       },
       {
-        message: "API Base URL is required for Azure connections.",
+        message: "API Base URL is required for Azure and GigaChat connections.",
         path: ["baseURL"],
       },
     );
@@ -217,6 +222,8 @@ export function CreateLLMApiKeyForm({
         return customization?.defaultBaseUrlAzure ?? "";
       case LLMAdapter.Anthropic:
         return customization?.defaultBaseUrlAnthropic ?? "";
+      case LLMAdapter.GigaChat:
+        return GIGACHAT_DEFAULT_BASE_URL;
       default:
         return "";
     }
@@ -252,6 +259,11 @@ export function CreateLLMApiKeyForm({
               existingKey.adapter === LLMAdapter.Bedrock && existingKey.config
                 ? ((existingKey.config as BedrockConfig).region ?? "")
                 : "",
+            gigachatScope:
+              existingKey.adapter === LLMAdapter.GigaChat && existingKey.config
+                ? ((existingKey.config as GigaChatConfig).scope ??
+                  GIGACHAT_DEFAULT_SCOPE)
+                : GIGACHAT_DEFAULT_SCOPE,
             awsAccessKeyId: "",
             awsSecretAccessKey: "",
           }
@@ -265,6 +277,7 @@ export function CreateLLMApiKeyForm({
             extraHeaders: [],
             vertexAILocation: "global",
             awsRegion: "",
+            gigachatScope: GIGACHAT_DEFAULT_SCOPE,
             awsAccessKeyId: "",
             awsSecretAccessKey: "",
           },
@@ -276,7 +289,8 @@ export function CreateLLMApiKeyForm({
     adapter === LLMAdapter.OpenAI ||
     adapter === LLMAdapter.Anthropic ||
     adapter === LLMAdapter.VertexAI ||
-    adapter === LLMAdapter.GoogleAIStudio;
+    adapter === LLMAdapter.GoogleAIStudio ||
+    adapter === LLMAdapter.GigaChat;
 
   const { fields, append, remove } = useFieldArray({
     control: form.control,
@@ -431,7 +445,7 @@ export function CreateLLMApiKeyForm({
     }
 
     let secretKey = values.secretKey;
-    let config: BedrockConfig | VertexAIConfig | undefined;
+    let config: BedrockConfig | VertexAIConfig | GigaChatConfig | undefined;
 
     if (currentAdapter === LLMAdapter.Bedrock) {
       // In update mode, only update credentials if provided
@@ -489,6 +503,10 @@ export function CreateLLMApiKeyForm({
       if (Object.keys(config).length === 0) {
         config = undefined;
       }
+    } else if (currentAdapter === LLMAdapter.GigaChat) {
+      config = {
+        scope: values.gigachatScope?.trim() || GIGACHAT_DEFAULT_SCOPE,
+      };
     }
 
     const extraHeaders =
@@ -894,12 +912,23 @@ export function CreateLLMApiKeyForm({
               name="secretKey"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>API Key</FormLabel>
+                  <FormLabel>
+                    {currentAdapter === LLMAdapter.GigaChat
+                      ? "GigaChat Credentials"
+                      : "API Key"}
+                  </FormLabel>
                   <FormDescription>
                     {isLangfuseCloud
                       ? "Your API keys are stored encrypted on our servers."
                       : "Your API keys are stored encrypted in your database."}
                   </FormDescription>
+                  {currentAdapter === LLMAdapter.GigaChat && (
+                    <FormDescription className="text-dark-yellow">
+                      Use the value of <code>GIGACHAT_CREDENTIALS</code> (Basic
+                      auth credentials from Sber). You can provide it with or
+                      without the <code>Basic </code> prefix.
+                    </FormDescription>
+                  )}
                   <FormControl>
                     <Input
                       {...field}
@@ -920,7 +949,7 @@ export function CreateLLMApiKeyForm({
           )}
 
           {/* Azure Base URL - Always required for Azure */}
-          {currentAdapter === LLMAdapter.Azure && (
+          {[LLMAdapter.Azure, LLMAdapter.GigaChat].includes(currentAdapter) && (
             <FormField
               control={form.control}
               name="baseURL"
@@ -928,15 +957,43 @@ export function CreateLLMApiKeyForm({
                 <FormItem>
                   <FormLabel>API Base URL</FormLabel>
                   <FormDescription>
-                    Please add the base URL in the following format (or
-                    compatible API):
-                    https://&#123;instanceName&#125;.openai.azure.com/openai/deployments
+                    {currentAdapter === LLMAdapter.Azure
+                      ? "Please add the base URL in the following format (or compatible API): https://{instanceName}.openai.azure.com/openai/deployments"
+                      : `Default GigaChat base URL: ${GIGACHAT_DEFAULT_BASE_URL}`}
                   </FormDescription>
                   <FormControl>
                     <Input
                       {...field}
-                      placeholder="https://your-instance.openai.azure.com/openai/deployments"
+                      placeholder={
+                        currentAdapter === LLMAdapter.Azure
+                          ? "https://your-instance.openai.azure.com/openai/deployments"
+                          : GIGACHAT_DEFAULT_BASE_URL
+                      }
                     />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
+
+          {/* GigaChat Scope - main section */}
+          {currentAdapter === LLMAdapter.GigaChat && (
+            <FormField
+              control={form.control}
+              name="gigachatScope"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Scope</FormLabel>
+                  <FormDescription>
+                    OAuth scope for GigaChat token exchange. Defaults to{" "}
+                    <span className="font-medium">
+                      {GIGACHAT_DEFAULT_SCOPE}
+                    </span>
+                    .
+                  </FormDescription>
+                  <FormControl>
+                    <Input {...field} placeholder={GIGACHAT_DEFAULT_SCOPE} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -974,34 +1031,36 @@ export function CreateLLMApiKeyForm({
           {hasAdvancedSettings(currentAdapter) && showAdvancedSettings && (
             <div className="space-y-4 border-t pt-4">
               {/* baseURL */}
-              <FormField
-                control={form.control}
-                name="baseURL"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>API Base URL</FormLabel>
-                    <FormDescription>
-                      Leave blank to use the default base URL for the given LLM
-                      adapter.{" "}
-                      {currentAdapter === LLMAdapter.OpenAI && (
-                        <span>OpenAI default: https://api.openai.com/v1</span>
-                      )}
-                      {currentAdapter === LLMAdapter.Anthropic && (
-                        <span>
-                          Anthropic default: https://api.anthropic.com
-                          (excluding /v1/messages)
-                        </span>
-                      )}
-                    </FormDescription>
+              {currentAdapter !== LLMAdapter.GigaChat && (
+                <FormField
+                  control={form.control}
+                  name="baseURL"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>API Base URL</FormLabel>
+                      <FormDescription>
+                        Leave blank to use the default base URL for the given
+                        LLM adapter.{" "}
+                        {currentAdapter === LLMAdapter.OpenAI && (
+                          <span>OpenAI default: https://api.openai.com/v1</span>
+                        )}
+                        {currentAdapter === LLMAdapter.Anthropic && (
+                          <span>
+                            Anthropic default: https://api.anthropic.com
+                            (excluding /v1/messages)
+                          </span>
+                        )}
+                      </FormDescription>
 
-                    <FormControl>
-                      <Input {...field} placeholder="default" />
-                    </FormControl>
+                      <FormControl>
+                        <Input {...field} placeholder="default" />
+                      </FormControl>
 
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
 
               {/* VertexAI Location */}
               {currentAdapter === LLMAdapter.VertexAI && (
