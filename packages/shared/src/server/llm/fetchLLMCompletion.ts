@@ -561,9 +561,7 @@ export async function fetchLLMCompletion(
     const responseStatusCode =
       (e as any)?.response?.status ?? (e as any)?.status ?? 500;
     const rawMessage = e instanceof Error ? e.message : String(e);
-    const message = enrichGigaChatScopeErrorMessage(
-      extractCleanErrorMessage(rawMessage),
-    );
+    const message = extractCleanErrorMessage(rawMessage);
 
     // Check for non-retryable error patterns in message
     const nonRetryablePatterns = [
@@ -709,18 +707,6 @@ function extractCleanErrorMessage(rawMessage: string): string {
   }
 
   return rawMessage;
-}
-
-function enrichGigaChatScopeErrorMessage(message: string): string {
-  if (
-    message
-      .toLowerCase()
-      .includes("scope from db not fully includes consumed scope")
-  ) {
-    return `${message}. Check GigaChat connection scope in provider config (e.g. use the scope assigned to your credentials instead of default GIGACHAT_API_PERS).`;
-  }
-
-  return message;
 }
 
 function normalizeGigaChatCredentials(credentials: string): string {
