@@ -492,13 +492,12 @@ export async function fetchLLMCompletion(
       const structuredOutputConfig = shouldUseFunctionCallingForStructuredOutput
         ? { method: "functionCalling" as const }
         : undefined;
-      const structuredSchema =
-        modelParams.adapter === LLMAdapter.GigaChat
-          ? getGigaChatStructuredOutputSchema(params.structuredOutputSchema)
-          : params.structuredOutputSchema;
 
       const structuredOutput = await (chatModel as any)
-        .withStructuredOutput(structuredSchema, structuredOutputConfig)
+        .withStructuredOutput(
+          params.structuredOutputSchema,
+          structuredOutputConfig,
+        )
         .invoke(finalMessages, runConfig);
 
       return structuredOutput;
@@ -713,86 +712,4 @@ function normalizeGigaChatCredentials(credentials: string): string {
   return credentials.startsWith("Basic ")
     ? credentials.slice("Basic ".length).trim()
     : credentials.trim();
-}
-
-function getGigaChatStructuredOutputSchema(
-  schema: ZodSchema | LLMJSONSchema,
-): LLMJSONSchema {
-  if (schema instanceof z.ZodObject) {
-    return zodObjectToJsonSchema(schema);
-  }
-
-  if (
-    typeof schema === "object" &&
-    schema !== null &&
-    "type" in schema &&
-    schema.type === "object"
-  ) {
-    const normalized = { ...(schema as Record<string, unknown>) };
-    if (
-      !("properties" in normalized) ||
-      typeof normalized.properties !== "object" ||
-      normalized.properties == null ||
-      Array.isArray(normalized.properties)
-    ) {
-      normalized.properties = {};
-    }
-    return normalized as LLMJSONSchema;
-  }
-
-  throw new Error(
-    "Unsupported structured output schema for GigaChat. Expected a Zod object schema or JSON schema object with type='object'.",
-  );
-}
-
-function zodObjectToJsonSchema(
-  schema: z.ZodObject<Record<string, z.ZodTypeAny>>,
-): LLMJSONSchema {
-  const shape = schema.shape;
-  const properties: Record<string, unknown> = {};
-  const required: string[] = [];
-
-  for (const [key, value] of Object.entries(shape)) {
-    properties[key] = zodTypeToJsonSchema(value);
-    if (!(value instanceof z.ZodOptional) && !(value instanceof z.ZodDefault)) {
-      required.push(key);
-    }
-  }
-
-  return {
-    type: "object",
-    properties,
-    ...(required.length ? { required } : {}),
-    additionalProperties: false,
-  };
-}
-
-function zodTypeToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
-  if (schema instanceof z.ZodOptional || schema instanceof z.ZodDefault) {
-    return zodTypeToJsonSchema(schema.unwrap() as z.ZodTypeAny);
-  }
-  if (schema instanceof z.ZodNullable) {
-    return {
-      anyOf: [
-        zodTypeToJsonSchema(schema.unwrap() as z.ZodTypeAny),
-        { type: "null" },
-      ],
-    };
-  }
-  if (schema instanceof z.ZodString) return { type: "string" };
-  if (schema instanceof z.ZodNumber) return { type: "number" };
-  if (schema instanceof z.ZodBoolean) return { type: "boolean" };
-  if (schema instanceof z.ZodEnum)
-    return { type: "string", enum: schema.options };
-  if (schema instanceof z.ZodArray) {
-    return {
-      type: "array",
-      items: zodTypeToJsonSchema(schema.element as unknown as z.ZodTypeAny),
-    };
-  }
-  if (schema instanceof z.ZodObject) {
-    return zodObjectToJsonSchema(schema);
-  }
-
-  throw new Error("Unsupported Zod field type for GigaChat structured output.");
 }

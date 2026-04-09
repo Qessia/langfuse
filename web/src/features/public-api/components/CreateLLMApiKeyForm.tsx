@@ -43,6 +43,23 @@ import { env } from "@/src/env.mjs";
 
 const isLangfuseCloud = Boolean(env.NEXT_PUBLIC_LANGFUSE_CLOUD_REGION);
 
+const GIGACHAT_SCOPE_OPTIONS = [
+  "GIGACHAT_API_PERS",
+  "GIGACHAT_API_CORP",
+  "GIGACHAT_API_B2B",
+] as const;
+const GigaChatScopeSchema = z.enum(GIGACHAT_SCOPE_OPTIONS);
+type GigaChatScope = z.infer<typeof GigaChatScopeSchema>;
+const DEFAULT_GIGACHAT_SCOPE =
+  GigaChatScopeSchema.safeParse(GIGACHAT_DEFAULT_SCOPE).success
+    ? (GIGACHAT_DEFAULT_SCOPE as GigaChatScope)
+    : GIGACHAT_SCOPE_OPTIONS[0];
+
+const normalizeGigaChatScope = (scope: string | null | undefined): GigaChatScope =>
+  GigaChatScopeSchema.safeParse(scope).success
+    ? (scope as GigaChatScope)
+    : DEFAULT_GIGACHAT_SCOPE;
+
 const isCustomModelsRequired = (adapter: LLMAdapter) =>
   adapter === LLMAdapter.Azure || adapter === LLMAdapter.Bedrock;
 
@@ -65,7 +82,7 @@ const createFormSchema = (mode: "create" | "update") =>
       awsSecretAccessKey: z.string().optional(),
       awsRegion: z.string().optional(),
       vertexAILocation: z.string().optional(),
-      gigachatScope: z.string().optional(),
+      gigachatScope: GigaChatScopeSchema.optional(),
       extraHeaders: z.array(
         z.object({
           key: z.string().min(1),
@@ -162,12 +179,11 @@ const createFormSchema = (mode: "create" | "update") =>
     )
     .refine(
       (data) => {
-        if (![LLMAdapter.Azure, LLMAdapter.GigaChat].includes(data.adapter))
-          return true;
+        if (data.adapter !== LLMAdapter.Azure) return true;
         return data.baseURL && data.baseURL.trim() !== "";
       },
       {
-        message: "API Base URL is required for Azure and GigaChat connections.",
+        message: "API Base URL is required for Azure connections.",
         path: ["baseURL"],
       },
     );
@@ -258,9 +274,10 @@ export function CreateLLMApiKeyForm({
                 : "",
             gigachatScope:
               existingKey.adapter === LLMAdapter.GigaChat && existingKey.config
-                ? ((existingKey.config as GigaChatConfig).scope ??
-                  GIGACHAT_DEFAULT_SCOPE)
-                : GIGACHAT_DEFAULT_SCOPE,
+                ? normalizeGigaChatScope(
+                    (existingKey.config as GigaChatConfig).scope,
+                  )
+                : DEFAULT_GIGACHAT_SCOPE,
             awsAccessKeyId: "",
             awsSecretAccessKey: "",
           }
@@ -274,7 +291,7 @@ export function CreateLLMApiKeyForm({
             extraHeaders: [],
             vertexAILocation: "global",
             awsRegion: "",
-            gigachatScope: GIGACHAT_DEFAULT_SCOPE,
+            gigachatScope: DEFAULT_GIGACHAT_SCOPE,
             awsAccessKeyId: "",
             awsSecretAccessKey: "",
           },
@@ -502,7 +519,7 @@ export function CreateLLMApiKeyForm({
       }
     } else if (currentAdapter === LLMAdapter.GigaChat) {
       config = {
-        scope: values.gigachatScope?.trim() || GIGACHAT_DEFAULT_SCOPE,
+        scope: values.gigachatScope ?? DEFAULT_GIGACHAT_SCOPE,
       };
     }
 
@@ -985,12 +1002,26 @@ export function CreateLLMApiKeyForm({
                   <FormDescription>
                     OAuth scope for GigaChat token exchange. Defaults to{" "}
                     <span className="font-medium">
-                      {GIGACHAT_DEFAULT_SCOPE}
+                      {DEFAULT_GIGACHAT_SCOPE}
                     </span>
                     .
                   </FormDescription>
                   <FormControl>
-                    <Input {...field} placeholder={GIGACHAT_DEFAULT_SCOPE} />
+                    <Select
+                      value={field.value ?? DEFAULT_GIGACHAT_SCOPE}
+                      onValueChange={field.onChange}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder={DEFAULT_GIGACHAT_SCOPE} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {GIGACHAT_SCOPE_OPTIONS.map((scope) => (
+                          <SelectItem key={scope} value={scope}>
+                            {scope}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </FormControl>
                   <FormMessage />
                 </FormItem>
