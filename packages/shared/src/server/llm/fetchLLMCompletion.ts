@@ -1,5 +1,5 @@
 import { type ZodSchema, z } from "zod";
-import { randomUUID } from "crypto";
+import { Agent as HttpsAgent } from "https";
 
 import { ChatAnthropic, ChatAnthropicInput } from "@langchain/anthropic";
 import { ChatVertexAI } from "@langchain/google-vertexai";
@@ -18,12 +18,11 @@ import {
 } from "@langchain/core/output_parsers";
 import { IterableReadableStream } from "@langchain/core/utils/stream";
 import { ChatOpenAI, AzureChatOpenAI } from "@langchain/openai";
+import { GigaChat } from "langchain-gigachat";
 import { env } from "../../env";
 import GCPServiceAccountKeySchema, {
   BedrockConfigSchema,
   BedrockCredentialSchema,
-  GIGACHAT_DEFAULT_BASE_URL,
-  GIGACHAT_DEFAULT_OAUTH_URL,
   GigaChatConfigSchema,
   VertexAIConfigSchema,
   BEDROCK_USE_DEFAULT_CREDENTIALS,
@@ -44,7 +43,7 @@ import {
   TraceSinkParams,
 } from "./types";
 import type { BaseCallbackHandler } from "@langchain/core/callbacks/base";
-import { Agent, ProxyAgent } from "undici";
+import { ProxyAgent } from "undici";
 import { getInternalTracingHandler } from "./getInternalTracingHandler";
 import { decrypt } from "../../encryption";
 import { decryptAndParseExtraHeaders } from "./utils";
@@ -66,17 +65,6 @@ const THINKING_BLOCK_TYPES: Partial<Record<LLMAdapter, Set<string>>> = {
 const STRUCTURED_OUTPUT_FUNCTION_CALLING_ADAPTERS = new Set<LLMAdapter>([
   LLMAdapter.GigaChat,
 ]);
-
-const GIGACHAT_TOKEN_DEFAULT_TTL_MS = 25 * 60 * 1000;
-const GIGACHAT_TOKEN_EXPIRY_SAFETY_WINDOW_MS = 60 * 1000;
-const GIGACHAT_OAUTH_MAX_ATTEMPTS = 3;
-const GIGACHAT_OAUTH_BASE_RETRY_DELAY_MS = 750;
-
-const gigaChatTokenCache = new Map<
-  string,
-  { accessToken: string; expiresAtMs: number }
->();
-const gigaChatTokenInflightRequests = new Map<string, Promise<string>>();
 
 function getThinkingBlockTypes(adapter: LLMAdapter): Set<string> | undefined {
   return THINKING_BLOCK_TYPES[adapter];
@@ -265,20 +253,14 @@ export async function fetchLLMCompletion(
   const proxyUrl = env.HTTPS_PROXY;
   const proxyDispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
   const timeoutMs = env.LANGFUSE_FETCH_LLM_COMPLETION_TIMEOUT_MS;
-  let gigaChatRuntime:
-    | {
-        baseURL: string;
-        accessToken: string;
-        dispatcher: Agent | ProxyAgent;
-      }
-    | undefined;
 
   let chatModel:
     | ChatOpenAI
     | ChatAnthropic
     | ChatBedrockConverse
     | ChatVertexAI
-    | ChatGoogleGenerativeAI;
+    | ChatGoogleGenerativeAI
+    | GigaChat;
   if (modelParams.adapter === LLMAdapter.Anthropic) {
     const isClaude45Family =
       modelParams.model?.includes("claude-sonnet-4-5") ||
@@ -359,41 +341,20 @@ export async function fetchLLMCompletion(
     });
   } else if (modelParams.adapter === LLMAdapter.GigaChat) {
     const gigaChatConfig = GigaChatConfigSchema.parse(config ?? {});
-    const gigaChatBaseURL = baseURL ?? GIGACHAT_DEFAULT_BASE_URL;
-    const gigaChatDispatcher = getGigaChatDispatcher(proxyDispatcher);
-    const gigaChatAccessToken = await fetchGigaChatAccessToken({
-      credentials: apiKey,
+    chatModel = new GigaChat({
+      credentials: normalizeGigaChatCredentials(apiKey),
       scope: gigaChatConfig.scope,
-      baseURL: gigaChatBaseURL,
-      timeoutMs,
-      dispatcher: gigaChatDispatcher,
-    });
-    gigaChatRuntime = {
-      baseURL: gigaChatBaseURL,
-      accessToken: gigaChatAccessToken,
-      dispatcher: gigaChatDispatcher,
-    };
-
-    chatModel = new ChatOpenAI({
-      apiKey: gigaChatAccessToken,
+      baseUrl: baseURL ?? undefined,
       model: modelParams.model,
       temperature: modelParams.temperature,
       maxTokens: modelParams.max_tokens,
       topP: modelParams.top_p,
-      streamUsage: false,
+      invocationKwargs: modelParams.providerOptions,
       callbacks: finalCallbacks,
       maxRetries,
-      configuration: {
-        baseURL: processOpenAIBaseURL({
-          url: gigaChatBaseURL,
-          modelName: modelParams.model,
-        }),
-        timeout: timeoutMs,
-        defaultHeaders: extraHeaders,
-        fetchOptions: { dispatcher: gigaChatDispatcher },
-      },
-      modelKwargs: modelParams.providerOptions,
-      timeout: timeoutMs,
+      timeout: Math.ceil(timeoutMs / 1000),
+      // GigaChat often requires a custom trust chain; keep parity with previous behavior.
+      httpsAgent: new HttpsAgent({ rejectUnauthorized: false }),
     });
   } else if (modelParams.adapter === LLMAdapter.Azure) {
     chatModel = new AzureChatOpenAI({
@@ -523,22 +484,6 @@ export async function fetchLLMCompletion(
   try {
     // Important: await all generations in the try block as otherwise `processTracedEvents` will run too early in finally block
     if (params.structuredOutputSchema) {
-      // GigaChat structured output is more reliable via native function calling payload.
-      if (
-        modelParams.adapter === LLMAdapter.GigaChat &&
-        gigaChatRuntime &&
-        !streaming
-      ) {
-        return await fetchGigaChatStructuredOutput({
-          messages,
-          modelParams,
-          structuredOutputSchema: params.structuredOutputSchema,
-          runtime: gigaChatRuntime,
-          extraHeaders,
-          timeoutMs,
-        });
-      }
-
       // Thinking-capable adapters may produce reasoning blocks that corrupt JSON schema
       // parsing. Force function calling so the parser reads from tool_calls instead.
       const shouldUseFunctionCallingForStructuredOutput =
@@ -547,12 +492,13 @@ export async function fetchLLMCompletion(
       const structuredOutputConfig = shouldUseFunctionCallingForStructuredOutput
         ? { method: "functionCalling" as const }
         : undefined;
+      const structuredSchema =
+        modelParams.adapter === LLMAdapter.GigaChat
+          ? getGigaChatStructuredOutputSchema(params.structuredOutputSchema)
+          : params.structuredOutputSchema;
 
-      const structuredOutput = await (chatModel as ChatOpenAI)
-        .withStructuredOutput(
-          params.structuredOutputSchema,
-          structuredOutputConfig,
-        )
+      const structuredOutput = await (chatModel as any)
+        .withStructuredOutput(structuredSchema, structuredOutputConfig)
         .invoke(finalMessages, runConfig);
 
       return structuredOutput;
@@ -595,7 +541,7 @@ export async function fetchLLMCompletion(
     }
 
     if (streaming)
-      return chatModel
+      return (chatModel as any)
         .pipe(new BytesOutputParser())
         .stream(finalMessages, runConfig);
 
@@ -606,7 +552,7 @@ export async function fetchLLMCompletion(
       return extractCompletionWithReasoning(aiMessage, thinkingTypes);
     }
 
-    const completion = await chatModel
+    const completion = await (chatModel as any)
       .pipe(new StringOutputParser())
       .invoke(finalMessages, runConfig);
 
@@ -615,7 +561,9 @@ export async function fetchLLMCompletion(
     const responseStatusCode =
       (e as any)?.response?.status ?? (e as any)?.status ?? 500;
     const rawMessage = e instanceof Error ? e.message : String(e);
-    const message = extractCleanErrorMessage(rawMessage);
+    const message = enrichGigaChatScopeErrorMessage(
+      extractCleanErrorMessage(rawMessage),
+    );
 
     // Check for non-retryable error patterns in message
     const nonRetryablePatterns = [
@@ -732,149 +680,6 @@ function processOpenAIBaseURL(params: {
   return url.replace("{model}", modelName);
 }
 
-function getGigaChatDispatcher(
-  proxyDispatcher?: ProxyAgent,
-): Agent | ProxyAgent {
-  if (proxyDispatcher) {
-    return proxyDispatcher;
-  }
-
-  // GigaChat may require additional trusted root certs (MinTsifry).
-  // To keep setup simple, default to TLS certificate verification disabled.
-  return new Agent({
-    connect: {
-      rejectUnauthorized: false,
-    },
-  });
-}
-
-async function fetchGigaChatAccessToken(params: {
-  credentials: string;
-  scope: string;
-  baseURL: string;
-  timeoutMs: number;
-  dispatcher: Agent | ProxyAgent;
-}): Promise<string> {
-  const { credentials, scope, baseURL, timeoutMs, dispatcher } = params;
-  const tokenUrl = getGigaChatOAuthUrl(baseURL);
-  const basicCredentials = credentials.startsWith("Basic ")
-    ? credentials.slice(6).trim()
-    : credentials.trim();
-  const cacheKey = `${tokenUrl}|${scope}|${basicCredentials}`;
-
-  const cachedToken = gigaChatTokenCache.get(cacheKey);
-  if (
-    cachedToken &&
-    cachedToken.expiresAtMs - GIGACHAT_TOKEN_EXPIRY_SAFETY_WINDOW_MS >
-      Date.now()
-  ) {
-    return cachedToken.accessToken;
-  }
-
-  const inflightRequest = gigaChatTokenInflightRequests.get(cacheKey);
-  if (inflightRequest) {
-    return inflightRequest;
-  }
-
-  const accessTokenPromise = (async () => {
-    let response: Response | null = null;
-    let responseText = "";
-
-    for (let attempt = 1; attempt <= GIGACHAT_OAUTH_MAX_ATTEMPTS; attempt++) {
-      response = await fetch(tokenUrl, {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${basicCredentials}`,
-          "Content-Type": "application/x-www-form-urlencoded",
-          Accept: "application/json",
-          RqUID: randomUUID(),
-        },
-        body: new URLSearchParams({ scope }).toString(),
-        signal: AbortSignal.timeout(timeoutMs),
-        ...(dispatcher ? ({ dispatcher } as any) : {}),
-      });
-
-      if (response.ok) {
-        break;
-      }
-
-      responseText = await response.text();
-      const isRetryableStatus =
-        response.status === 429 || response.status >= 500;
-      const shouldRetry =
-        isRetryableStatus && attempt < GIGACHAT_OAUTH_MAX_ATTEMPTS;
-
-      if (!shouldRetry) {
-        throw createGigaChatRequestError({
-          message: `GigaChat auth failed with status ${response.status}: ${responseText}`,
-          status: response.status,
-        });
-      }
-
-      const retryDelayMs = getRetryDelayMs({
-        attempt,
-        retryAfterHeader: response.headers.get("retry-after"),
-      });
-      logger.warn(
-        `GigaChat auth attempt ${attempt}/${GIGACHAT_OAUTH_MAX_ATTEMPTS} failed with ${response.status}. Retrying in ${retryDelayMs}ms`,
-      );
-      await sleep(retryDelayMs);
-    }
-
-    if (!response || !response.ok) {
-      throw createGigaChatRequestError({
-        message: `GigaChat auth failed without a successful response${
-          responseText ? `: ${responseText}` : ""
-        }`,
-      });
-    }
-
-    const tokenPayload = z
-      .object({
-        access_token: z.string(),
-        // API may return either absolute expiry timestamp or lifetime.
-        expires_at: z.union([z.number(), z.string()]).optional(),
-        expires_in: z.union([z.number(), z.string()]).optional(),
-      })
-      .passthrough()
-      .parse(await response.json());
-
-    const now = Date.now();
-    const expiresAtMs = resolveGigaChatTokenExpiryMs({
-      nowMs: now,
-      expiresAtRaw: tokenPayload.expires_at,
-      expiresInRaw: tokenPayload.expires_in,
-    });
-
-    gigaChatTokenCache.set(cacheKey, {
-      accessToken: tokenPayload.access_token,
-      expiresAtMs,
-    });
-
-    return tokenPayload.access_token;
-  })();
-
-  gigaChatTokenInflightRequests.set(cacheKey, accessTokenPromise);
-  try {
-    return await accessTokenPromise;
-  } finally {
-    gigaChatTokenInflightRequests.delete(cacheKey);
-  }
-}
-
-function getGigaChatOAuthUrl(baseURL: string): string {
-  try {
-    const parsed = new URL(baseURL);
-    if (parsed.hostname === "gigachat.devices.sberbank.ru") {
-      return GIGACHAT_DEFAULT_OAUTH_URL;
-    }
-  } catch {
-    // Fallback to default endpoint below.
-  }
-
-  return GIGACHAT_DEFAULT_OAUTH_URL;
-}
-
 function extractCleanErrorMessage(rawMessage: string): string {
   // Try to parse JSON error format (common in Google/Vertex AI errors)
   // Example: '[{"error":{"code":404,"message":"Model not found..."}}]'
@@ -906,285 +711,102 @@ function extractCleanErrorMessage(rawMessage: string): string {
   return rawMessage;
 }
 
-function resolveGigaChatTokenExpiryMs(params: {
-  nowMs: number;
-  expiresAtRaw?: number | string;
-  expiresInRaw?: number | string;
-}) {
-  const { nowMs, expiresAtRaw, expiresInRaw } = params;
-
-  const expiresAtNumber =
-    typeof expiresAtRaw === "string" ? Number(expiresAtRaw) : expiresAtRaw;
-  if (typeof expiresAtNumber === "number" && Number.isFinite(expiresAtNumber)) {
-    // Some APIs return seconds, others milliseconds.
-    return expiresAtNumber > 1e12 ? expiresAtNumber : expiresAtNumber * 1000;
-  }
-
-  const expiresInNumber =
-    typeof expiresInRaw === "string" ? Number(expiresInRaw) : expiresInRaw;
-  if (typeof expiresInNumber === "number" && Number.isFinite(expiresInNumber)) {
-    return nowMs + expiresInNumber * 1000;
-  }
-
-  return nowMs + GIGACHAT_TOKEN_DEFAULT_TTL_MS;
-}
-
-function toGigaChatMessages(messages: ChatMessage[]) {
-  return messages
-    .filter((message) => message.content !== "")
-    .map((message) => {
-      const content =
-        typeof message.content === "string"
-          ? message.content
-          : JSON.stringify(message.content);
-
-      if (message.type === ChatMessageType.ToolResult) {
-        return {
-          role: "function",
-          content,
-        };
-      }
-
-      if (message.role === ChatMessageRole.System) {
-        return {
-          role: "system",
-          content,
-        };
-      }
-
-      if (message.role === ChatMessageRole.User) {
-        return {
-          role: "user",
-          content,
-        };
-      }
-
-      return {
-        role: "assistant",
-        content,
-      };
-    });
-}
-
-function buildGigaChatFunctionParameters(
-  schema: ZodSchema | LLMJSONSchema,
-): Record<string, unknown> {
+function enrichGigaChatScopeErrorMessage(message: string): string {
   if (
-    typeof schema === "object" &&
-    schema !== null &&
-    "type" in schema &&
-    "properties" in schema
+    message
+      .toLowerCase()
+      .includes("scope from db not fully includes consumed scope")
   ) {
-    return schema as Record<string, unknown>;
+    return `${message}. Check GigaChat connection scope in provider config (e.g. use the scope assigned to your credentials instead of default GIGACHAT_API_PERS).`;
   }
 
+  return message;
+}
+
+function normalizeGigaChatCredentials(credentials: string): string {
+  return credentials.startsWith("Basic ")
+    ? credentials.slice("Basic ".length).trim()
+    : credentials.trim();
+}
+
+function getGigaChatStructuredOutputSchema(
+  schema: ZodSchema | LLMJSONSchema,
+): LLMJSONSchema {
   if (schema instanceof z.ZodObject) {
     return zodObjectToJsonSchema(schema);
   }
 
+  if (
+    typeof schema === "object" &&
+    schema !== null &&
+    "type" in schema &&
+    schema.type === "object"
+  ) {
+    const normalized = { ...(schema as Record<string, unknown>) };
+    if (
+      !("properties" in normalized) ||
+      typeof normalized.properties !== "object" ||
+      normalized.properties == null ||
+      Array.isArray(normalized.properties)
+    ) {
+      normalized.properties = {};
+    }
+    return normalized as LLMJSONSchema;
+  }
+
   throw new Error(
-    "Unsupported structured output schema for GigaChat. Expected a JSON schema object or a Zod object schema.",
+    "Unsupported structured output schema for GigaChat. Expected a Zod object schema or JSON schema object with type='object'.",
   );
 }
 
 function zodObjectToJsonSchema(
   schema: z.ZodObject<Record<string, z.ZodTypeAny>>,
-): Record<string, unknown> {
+): LLMJSONSchema {
   const shape = schema.shape;
   const properties: Record<string, unknown> = {};
   const required: string[] = [];
 
   for (const [key, value] of Object.entries(shape)) {
     properties[key] = zodTypeToJsonSchema(value);
-    if (!isZodOptional(value)) {
+    if (!(value instanceof z.ZodOptional) && !(value instanceof z.ZodDefault)) {
       required.push(key);
     }
   }
-
-  const description = getZodDescription(schema);
 
   return {
     type: "object",
     properties,
     ...(required.length ? { required } : {}),
-    ...(description ? { description } : {}),
     additionalProperties: false,
   };
 }
 
-function isZodOptional(value: z.ZodTypeAny): boolean {
-  return value instanceof z.ZodOptional || value instanceof z.ZodDefault;
-}
-
 function zodTypeToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
-  const description = getZodDescription(schema);
-
   if (schema instanceof z.ZodOptional || schema instanceof z.ZodDefault) {
-    return zodTypeToJsonSchema(schema.unwrap() as any);
+    return zodTypeToJsonSchema(schema.unwrap() as z.ZodTypeAny);
   }
-
   if (schema instanceof z.ZodNullable) {
-    const innerSchema = zodTypeToJsonSchema(schema.unwrap() as any);
     return {
-      anyOf: [innerSchema, { type: "null" }],
-      ...(description ? { description } : {}),
+      anyOf: [
+        zodTypeToJsonSchema(schema.unwrap() as z.ZodTypeAny),
+        { type: "null" },
+      ],
     };
   }
-
-  if (schema instanceof z.ZodString) {
-    return { type: "string", ...(description ? { description } : {}) };
-  }
-  if (schema instanceof z.ZodNumber) {
-    return { type: "number", ...(description ? { description } : {}) };
-  }
-  if (schema instanceof z.ZodBoolean) {
-    return { type: "boolean", ...(description ? { description } : {}) };
-  }
-  if (schema instanceof z.ZodEnum) {
-    return {
-      type: "string",
-      enum: schema.options,
-      ...(description ? { description } : {}),
-    };
-  }
+  if (schema instanceof z.ZodString) return { type: "string" };
+  if (schema instanceof z.ZodNumber) return { type: "number" };
+  if (schema instanceof z.ZodBoolean) return { type: "boolean" };
+  if (schema instanceof z.ZodEnum)
+    return { type: "string", enum: schema.options };
   if (schema instanceof z.ZodArray) {
     return {
       type: "array",
-      items: zodTypeToJsonSchema(schema.element as any),
-      ...(description ? { description } : {}),
+      items: zodTypeToJsonSchema(schema.element as unknown as z.ZodTypeAny),
     };
   }
   if (schema instanceof z.ZodObject) {
-    const objectSchema = zodObjectToJsonSchema(schema);
-    return {
-      ...objectSchema,
-      ...(description ? { description } : {}),
-    };
+    return zodObjectToJsonSchema(schema);
   }
 
-  throw new Error("Unsupported Zod type for GigaChat structured output.");
-}
-
-function getZodDescription(schema: z.ZodTypeAny): string | undefined {
-  const description =
-    (schema as any)?._def?.description ??
-    (schema as any)?._def?.meta?.description ??
-    (schema as any)?.description;
-
-  return typeof description === "string" && description.length > 0
-    ? description
-    : undefined;
-}
-
-function getRetryDelayMs(params: {
-  attempt: number;
-  retryAfterHeader: string | null;
-}): number {
-  const { attempt, retryAfterHeader } = params;
-  const retryAfterSeconds = retryAfterHeader
-    ? Number.parseInt(retryAfterHeader, 10)
-    : NaN;
-
-  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
-    return retryAfterSeconds * 1000;
-  }
-
-  return GIGACHAT_OAUTH_BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1);
-}
-
-function createGigaChatRequestError(params: {
-  message: string;
-  status?: number;
-}) {
-  const error = new Error(params.message) as Error & { status?: number };
-  if (typeof params.status === "number") {
-    error.status = params.status;
-  }
-  return error;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function fetchGigaChatStructuredOutput(params: {
-  messages: ChatMessage[];
-  modelParams: ModelParams;
-  structuredOutputSchema: ZodSchema | LLMJSONSchema;
-  runtime: {
-    baseURL: string;
-    accessToken: string;
-    dispatcher: Agent | ProxyAgent;
-  };
-  extraHeaders?: Record<string, string>;
-  timeoutMs: number;
-}): Promise<Record<string, unknown>> {
-  const functionName = "structured_output";
-  const functionParameters = buildGigaChatFunctionParameters(
-    params.structuredOutputSchema,
-  );
-
-  const response = await fetch(
-    new URL("chat/completions", params.runtime.baseURL).toString(),
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${params.runtime.accessToken}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        ...(params.extraHeaders ?? {}),
-      },
-      body: JSON.stringify({
-        model: params.modelParams.model,
-        messages: toGigaChatMessages(params.messages),
-        functions: [
-          {
-            name: functionName,
-            description:
-              "Return the evaluation result in the required structured format.",
-            parameters: functionParameters,
-          },
-        ],
-        function_call: { name: functionName },
-        temperature: params.modelParams.temperature,
-        max_tokens: params.modelParams.max_tokens,
-        top_p: params.modelParams.top_p,
-        ...(params.modelParams.providerOptions ?? {}),
-      }),
-      signal: AbortSignal.timeout(params.timeoutMs),
-      ...(params.runtime.dispatcher
-        ? ({ dispatcher: params.runtime.dispatcher } as any)
-        : {}),
-    },
-  );
-
-  if (!response.ok) {
-    throw new Error(
-      `GigaChat completion failed with status ${response.status}: ${await response.text()}`,
-    );
-  }
-
-  const payload = (await response.json()) as {
-    choices?: Array<{
-      message?: {
-        function_call?: { arguments?: unknown };
-        content?: unknown;
-      };
-    }>;
-  };
-
-  const rawArguments = payload.choices?.[0]?.message?.function_call?.arguments;
-  if (rawArguments && typeof rawArguments === "object") {
-    return rawArguments as Record<string, unknown>;
-  }
-  if (typeof rawArguments === "string") {
-    return JSON.parse(rawArguments) as Record<string, unknown>;
-  }
-
-  const content = payload.choices?.[0]?.message?.content;
-  if (typeof content === "string") {
-    return JSON.parse(content) as Record<string, unknown>;
-  }
-
-  throw new Error("GigaChat did not return structured output arguments.");
+  throw new Error("Unsupported Zod field type for GigaChat structured output.");
 }

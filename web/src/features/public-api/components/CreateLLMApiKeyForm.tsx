@@ -4,7 +4,6 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import {
   type BedrockConfig,
   type BedrockCredential,
-  GIGACHAT_DEFAULT_BASE_URL,
   GIGACHAT_DEFAULT_SCOPE,
   type GigaChatConfig,
   type VertexAIConfig,
@@ -222,8 +221,6 @@ export function CreateLLMApiKeyForm({
         return customization?.defaultBaseUrlAzure ?? "";
       case LLMAdapter.Anthropic:
         return customization?.defaultBaseUrlAnthropic ?? "";
-      case LLMAdapter.GigaChat:
-        return GIGACHAT_DEFAULT_BASE_URL;
       default:
         return "";
     }
@@ -959,7 +956,7 @@ export function CreateLLMApiKeyForm({
                   <FormDescription>
                     {currentAdapter === LLMAdapter.Azure
                       ? "Please add the base URL in the following format (or compatible API): https://{instanceName}.openai.azure.com/openai/deployments"
-                      : `Default GigaChat base URL: ${GIGACHAT_DEFAULT_BASE_URL}`}
+                      : "Leave blank to use the SDK/provider default base URL."}
                   </FormDescription>
                   <FormControl>
                     <Input
@@ -967,7 +964,7 @@ export function CreateLLMApiKeyForm({
                       placeholder={
                         currentAdapter === LLMAdapter.Azure
                           ? "https://your-instance.openai.azure.com/openai/deployments"
-                          : GIGACHAT_DEFAULT_BASE_URL
+                          : "https://gigachat.devices.sberbank.ru/api/v1"
                       }
                     />
                   </FormControl>
